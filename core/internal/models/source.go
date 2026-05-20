@@ -31,6 +31,20 @@ type CreateProxySourceRequest struct {
 	CleanupDays     int    `json:"cleanup_days" validate:"omitempty,min=1,max=365"`
 }
 
+// GeoEnrichResult summarizes one manual or scheduled GeoIP enrichment run.
+type GeoEnrichResult struct {
+	Attempted       int  `json:"attempted"`        // proxy rows processed this run (max 500 per click)
+	Enriched        int  `json:"enriched"`         // rows written with new geo data in DB
+	Remaining       int  `json:"remaining"`        // proxies still missing geo after this run
+	TotalPending    int  `json:"total_pending"`    // proxies missing geo before this run
+	BatchQueries    int  `json:"batch_queries"`    // HTTP POSTs to ip-api.com/batch
+	MaxIPsPerBatch  int  `json:"max_ips_per_batch"` // ip-api limit per request (100)
+	LookupSuccess   int  `json:"lookup_success"`   // ip-api status=success (API responses only)
+	LookupFailed    int  `json:"lookup_failed"`    // ip-api status=fail (API responses only)
+	CacheHits       int  `json:"cache_hits"`       // resolved from in-memory cache, no API call
+	RateLimited     bool `json:"rate_limited"`     // stopped early due to 429 / X-Rl=0
+}
+
 // UpdateProxySourceRequest is the payload for updating a source
 type UpdateProxySourceRequest struct {
 	Name            string `json:"name"`

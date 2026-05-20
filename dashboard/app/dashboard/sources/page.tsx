@@ -7,7 +7,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
-import { ProxySource, CreateSourceRequest } from "@/lib/types"
+import { ProxySource, CreateSourceRequest, GeoEnrichResult } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -126,11 +126,45 @@ export default function SourcesPage() {
     }
   }
 
+  const enrichGeoToast = (res: GeoEnrichResult) => {
+    const title =
+      res.attempted === 0
+        ? "No proxies need GeoIP"
+        : `Enriched ${res.enriched.toLocaleString()} of ${res.attempted.toLocaleString()} attempted`
+
+    const parts: string[] = []
+    if (res.total_pending > 0) {
+      parts.push(
+        `${res.remaining.toLocaleString()} still without geo (${res.total_pending.toLocaleString()} were pending)`,
+      )
+    }
+    if (res.batch_queries > 0 || res.cache_hits > 0) {
+      parts.push(
+        `${res.batch_queries} batch API ${res.batch_queries === 1 ? "query" : "queries"} (max ${res.max_ips_per_batch} IPs each; ip-api limit 15/min)`,
+      )
+      parts.push(
+        `Lookups: ${res.lookup_success.toLocaleString()} success, ${res.lookup_failed.toLocaleString()} failed, ${res.cache_hits.toLocaleString()} from cache`,
+      )
+    }
+    if (res.rate_limited) {
+      parts.push("Rate limited — wait ~1 min and run again, or let background enrich finish")
+    } else if (res.attempted > 0 && res.remaining > 0) {
+      parts.push("Click again to process the next batch (500 per run)")
+    }
+
+    const description = parts.length > 0 ? parts.join("\n") : undefined
+    if (res.rate_limited) {
+      toast.warning(title, { description })
+    } else {
+      toast.success(title, { description })
+    }
+  }
+
   const handleEnrichGeo = async () => {
     setEnriching(true)
     try {
       const res = await api.enrichGeo()
-      toast.success(`Geo enriched ${res.enriched} proxies`)
+      enrichGeoToast(res)
     } catch {
       toast.error("Geo enrichment failed")
     } finally {

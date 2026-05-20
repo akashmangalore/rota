@@ -17,7 +17,7 @@ import (
 
 // GeoEnricher enriches proxies that are missing geo data. Implemented by SourceService.
 type GeoEnricher interface {
-	EnrichAll(ctx context.Context) (int, error)
+	EnrichAll(ctx context.Context) (models.GeoEnrichResult, error)
 }
 
 // PoolService manages proxy pools: auto-sync by geo and scheduled health checks.
@@ -60,10 +60,15 @@ func (ps *PoolService) Start(ctx context.Context) {
 				// Enrich up to 500 ungeolocated proxies before sync and HC so
 				// that newly geolocated proxies are picked up in the same pass.
 				if ps.geoEnricher != nil {
-					if enriched, err := ps.geoEnricher.EnrichAll(ctx); err != nil {
+					if result, err := ps.geoEnricher.EnrichAll(ctx); err != nil {
 						ps.logger.Warn("periodic geo enrichment failed", "error", err)
-					} else if enriched > 0 {
-						ps.logger.Info("periodic geo enrichment completed", "count", enriched)
+					} else if result.Enriched > 0 {
+						ps.logger.Info("periodic geo enrichment completed",
+							"enriched", result.Enriched,
+							"attempted", result.Attempted,
+							"remaining", result.Remaining,
+							"batch_queries", result.BatchQueries,
+						)
 					}
 				}
 				ps.runScheduledHealthChecks(ctx)
@@ -218,12 +223,21 @@ func (ps *PoolService) EnrichAndSyncPool(ctx context.Context, poolID int) (enric
 		enrichCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		var err error
-		enriched, err = ps.geoEnricher.EnrichAll(enrichCtx)
+		result, err := ps.geoEnricher.EnrichAll(enrichCtx)
 		if err != nil {
 			ps.logger.Warn("pre-HC geo enrichment failed", "pool_id", poolID, "error", err)
 			enriched = 0
-		} else if enriched > 0 {
-			ps.logger.Info("pre-HC enriched proxies", "pool_id", poolID, "count", enriched)
+		} else {
+			enriched = result.Enriched
+			if enriched > 0 {
+				ps.logger.Info("pre-HC enriched proxies",
+					"pool_id", poolID,
+					"enriched", result.Enriched,
+					"attempted", result.Attempted,
+					"remaining", result.Remaining,
+					"batch_queries", result.BatchQueries,
+				)
+			}
 		}
 	}
 

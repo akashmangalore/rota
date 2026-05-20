@@ -205,6 +205,20 @@ export interface CreateSourceRequest {
   cleanup_days?: number
 }
 
+/** Response from POST /api/v1/sources/enrich-geo */
+export interface GeoEnrichResult {
+  attempted: number
+  enriched: number
+  remaining: number
+  total_pending: number
+  batch_queries: number
+  max_ips_per_batch: number
+  lookup_success: number
+  lookup_failed: number
+  cache_hits: number
+  rate_limited: boolean
+}
+
 export interface UpdateSourceRequest {
   name?: string
   url?: string

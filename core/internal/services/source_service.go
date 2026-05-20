@@ -308,7 +308,7 @@ func (s *SourceService) enrichGeo(ctx context.Context, addresses []string) {
 	if len(addresses) == 0 {
 		return
 	}
-	geos := s.geoSvc.EnrichProxies(ctx, addresses)
+	geos, _ := s.geoSvc.EnrichProxies(ctx, addresses)
 	if len(geos) == 0 {
 		return
 	}
@@ -333,12 +333,32 @@ func (s *SourceService) enrichGeo(ctx context.Context, addresses []string) {
 	}
 }
 
-// EnrichAll re-runs geo enrichment for all proxies that have no geo data yet.
-func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
+// countUngeolocated returns proxies with no country_code set.
+func (s *SourceService) countUngeolocated(ctx context.Context) (int, error) {
+	var n int
+	err := s.proxyRepo.GetDB().Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM proxies WHERE country_code IS NULL`,
+	).Scan(&n)
+	return n, err
+}
+
+// EnrichAll re-runs geo enrichment for up to 500 proxies that have no geo data yet.
+func (s *SourceService) EnrichAll(ctx context.Context) (models.GeoEnrichResult, error) {
+	out := models.GeoEnrichResult{MaxIPsPerBatch: 100}
+
+	totalPending, err := s.countUngeolocated(ctx)
+	if err != nil {
+		return out, err
+	}
+	out.TotalPending = totalPending
+	if totalPending == 0 {
+		return out, nil
+	}
+
 	rows, err := s.proxyRepo.GetDB().Pool.Query(ctx,
 		`SELECT address FROM proxies WHERE country_code IS NULL LIMIT 500`)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
 	defer rows.Close()
 
@@ -352,13 +372,22 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 		addresses = append(addresses, addr)
 	}
 
-	if len(addresses) == 0 {
-		return 0, nil
+	out.Attempted = len(addresses)
+	if out.Attempted == 0 {
+		out.Remaining = totalPending
+		return out, nil
 	}
 
-	geos := s.geoSvc.EnrichProxies(ctx, addresses)
+	geos, stats := s.geoSvc.EnrichProxies(ctx, addresses)
+	out.BatchQueries = stats.BatchQueries
+	out.LookupSuccess = stats.LookupSuccess
+	out.LookupFailed = stats.LookupFailed
+	out.CacheHits = stats.CacheHits
+	out.RateLimited = stats.RateLimited
+	out.MaxIPsPerBatch = stats.MaxIPsPerBatch
+
 	for addr, geo := range geos {
-		if _, err := s.proxyRepo.GetDB().Pool.Exec(ctx, `
+		tag, err := s.proxyRepo.GetDB().Pool.Exec(ctx, `
 			UPDATE proxies SET
 				country_code   = $1,
 				country_name   = $2,
@@ -370,10 +399,21 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 				geo_updated_at = NOW()
 			WHERE address = $8
 		`, geo.CountryCode, geo.CountryName, geo.RegionName, geo.CityName,
-			geo.Latitude, geo.Longitude, geo.ISP, addr); err != nil {
+			geo.Latitude, geo.Longitude, geo.ISP, addr)
+		if err != nil {
 			s.logger.Warn("EnrichAll: failed to update geo for proxy", "address", addr, "error", err)
+			continue
+		}
+		if tag.RowsAffected() > 0 {
+			out.Enriched++
 		}
 	}
+
+	remaining, err := s.countUngeolocated(ctx)
+	if err != nil {
+		return out, err
+	}
+	out.Remaining = remaining
 
 	// Re-sync pools now that geo data has changed; use a detached context so
 	// cancelling the HTTP request ctx doesn't abort the sync.
@@ -383,7 +423,7 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 		s.syncAllPools(syncCtx)
 	}()
 
-	return len(geos), nil
+	return out, nil
 }
 
 // parseProxyList parses a proxy list file, one entry per line.

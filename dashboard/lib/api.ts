@@ -13,6 +13,7 @@ import {
   BulkDeleteRequest,
   ProxyTestResult,
   ProxySource,
+  GeoEnrichResult,
   CreateSourceRequest,
   UpdateSourceRequest,
   ProxyPool,
@@ -359,7 +360,7 @@ class ApiClient {
     return this.request(`/api/v1/sources/${id}/fetch`, { method: "POST" })
   }
 
-  async enrichGeo(): Promise<{ enriched: number }> {
+  async enrichGeo(): Promise<GeoEnrichResult> {
     return this.request("/api/v1/sources/enrich-geo", { method: "POST" })
   }
 

@@ -81,15 +81,25 @@ import { toast } from "@/lib/toast"
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200] as const
 
-/** Server-side multi-sort: click = replace sort; Shift+click = add/toggle column. */
-function SortableHeader<T>({ column, label }: { column: Column<T, unknown>; label: string }) {
+/** Server-side multi-sort: first click sets primary; further clicks add columns (up to maxMultiSortColCount). */
+function SortableHeader<T>({
+  column,
+  label,
+  activeSortCount,
+}: {
+  column: Column<T, unknown>
+  label: string
+  activeSortCount: number
+}) {
   const sorted = column.getIsSorted()
   const sortIndex = column.getSortIndex()
+  // First column: replace mode. Once any sort is active, further clicks add or toggle in place.
+  const isMulti = activeSortCount > 0
   return (
     <Button
       variant="ghost"
       className="-ml-3 h-8"
-      onClick={(e) => column.toggleSorting(sorted === "asc", e.shiftKey)}
+      onClick={() => column.toggleSorting(sorted === "asc", isMulti)}
     >
       {label}
       {sortIndex >= 0 && (
@@ -477,12 +487,16 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "address",
-      header: ({ column }) => <SortableHeader column={column} label="Address" />,
+      header: ({ column }) => (
+        <SortableHeader column={column} label="Address" activeSortCount={sorting.length} />
+      ),
       cell: ({ row }) => <div className="font-mono">{row.getValue("address")}</div>,
     },
     {
       accessorKey: "protocol",
-      header: ({ column }) => <SortableHeader column={column} label="Protocol" />,
+      header: ({ column }) => (
+        <SortableHeader column={column} label="Protocol" activeSortCount={sorting.length} />
+      ),
       cell: ({ row }) => (
         <Badge variant="outline" className="uppercase">
           {row.getValue("protocol")}
@@ -491,7 +505,9 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "status",
-      header: ({ column }) => <SortableHeader column={column} label="Status" />,
+      header: ({ column }) => (
+        <SortableHeader column={column} label="Status" activeSortCount={sorting.length} />
+      ),
       cell: ({ row }) => {
         const status = row.getValue("status") as string
         const statusMap = {
@@ -518,7 +534,9 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "requests",
-      header: ({ column }) => <SortableHeader column={column} label="Requests" />,
+      header: ({ column }) => (
+        <SortableHeader column={column} label="Requests" activeSortCount={sorting.length} />
+      ),
       cell: ({ row }) => {
         const value = parseFloat(row.getValue("requests"))
         return <div suppressHydrationWarning>{value.toLocaleString('en-US')}</div>
@@ -526,7 +544,9 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "success_rate",
-      header: ({ column }) => <SortableHeader column={column} label="Success Rate" />,
+      header: ({ column }) => (
+        <SortableHeader column={column} label="Success Rate" activeSortCount={sorting.length} />
+      ),
       cell: ({ row }) => {
         const value = parseFloat(row.getValue("success_rate"))
         return <div>{value.toFixed(1)}%</div>
@@ -534,7 +554,9 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "avg_response_time",
-      header: ({ column }) => <SortableHeader column={column} label="Avg Response" />,
+      header: ({ column }) => (
+        <SortableHeader column={column} label="Avg Response" activeSortCount={sorting.length} />
+      ),
       cell: ({ row }) => {
         const value = parseFloat(row.getValue("avg_response_time"))
         return <div>{value}ms</div>
@@ -542,7 +564,9 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "last_check",
-      header: ({ column }) => <SortableHeader column={column} label="Last Check" />,
+      header: ({ column }) => (
+        <SortableHeader column={column} label="Last Check" activeSortCount={sorting.length} />
+      ),
       cell: ({ row }) => {
         const raw = row.getValue("last_check") as string | null | undefined
         if (!raw) {
@@ -653,7 +677,7 @@ export default function ProxiesPage() {
             <div>
               <CardTitle>Proxies</CardTitle>
               <CardDescription>
-                {pagination.total} total proxies · Click a column to sort; Shift+click to add another (up to 5)
+                {pagination.total} total proxies · Click columns to add sorts (1, 2, … up to 5); click again to toggle asc/desc
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
