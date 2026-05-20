@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/alpkeskin/rota/core/internal/models"
@@ -36,6 +37,43 @@ func NewProxyHandler(proxyRepo *repository.ProxyRepository, healthChecker Health
 	}
 }
 
+const maxProxySortQueryParams = 5
+
+// parseProxyListSort reads sort/order query params (repeat or comma-separated).
+func parseProxyListSort(r *http.Request) (fields []string, orders []string) {
+	fields = expandSortQueryValues(r.URL.Query()["sort"])
+	orders = expandSortQueryValues(r.URL.Query()["order"])
+	for len(orders) < len(fields) {
+		orders = append(orders, "desc")
+	}
+	if len(orders) > len(fields) {
+		orders = orders[:len(fields)]
+	}
+	for i, o := range orders {
+		if o != "asc" && o != "desc" {
+			orders[i] = "desc"
+		}
+	}
+	return fields, orders
+}
+
+func expandSortQueryValues(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out = append(out, part)
+			if len(out) >= maxProxySortQueryParams {
+				return out
+			}
+		}
+	}
+	return out
+}
+
 // List handles proxy listing with pagination and filters
 //	@Summary		List proxies
 //	@Description	Get paginated list of proxies with optional filters
@@ -46,8 +84,8 @@ func NewProxyHandler(proxyRepo *repository.ProxyRepository, healthChecker Health
 //	@Param			search		query		string						false	"Search term"
 //	@Param			status		query		string						false	"Filter by status"
 //	@Param			protocol	query		string						false	"Filter by protocol"
-//	@Param			sort		query		string						false	"Sort field"
-//	@Param			order		query		string						false	"Sort order (asc/desc)"
+//	@Param			sort		query		[]string					false	"Sort fields (repeat or comma-separated; max 5)"
+//	@Param			order		query		[]string					false	"Sort orders asc/desc (parallel to sort)"
 //	@Success		200			{object}	models.ProxyListResponse	"List of proxies"
 //	@Failure		500			{object}	models.ErrorResponse
 //	@Router			/proxies [get]
@@ -59,18 +97,17 @@ func (h *ProxyHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit < 1 || limit > 100 {
+	if limit < 1 || limit > 200 {
 		limit = 10
 	}
 
 	search := r.URL.Query().Get("search")
 	status := r.URL.Query().Get("status")
 	protocol := r.URL.Query().Get("protocol")
-	sortField := r.URL.Query().Get("sort")
-	sortOrder := r.URL.Query().Get("order")
+	sortFields, sortOrders := parseProxyListSort(r)
 
 	// Get proxies
-	proxies, total, err := h.proxyRepo.List(r.Context(), page, limit, search, status, protocol, sortField, sortOrder)
+	proxies, total, err := h.proxyRepo.List(r.Context(), page, limit, search, status, protocol, sortFields, sortOrders)
 	if err != nil {
 		h.logger.Error("failed to list proxies", "error", err)
 		h.errorResponse(w, http.StatusInternalServerError, "Failed to list proxies")
@@ -369,7 +406,7 @@ func (h *ProxyHandler) Export(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 
 	// Get all proxies
-	proxies, _, err := h.proxyRepo.List(r.Context(), 1, 10000, "", status, "", "created_at", "asc")
+	proxies, _, err := h.proxyRepo.List(r.Context(), 1, 10000, "", status, "", []string{"created_at"}, []string{"asc"})
 	if err != nil {
 		h.logger.Error("failed to get proxies for export", "error", err)
 		h.errorResponse(w, http.StatusInternalServerError, "Failed to export proxies")

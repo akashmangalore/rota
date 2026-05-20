@@ -27,8 +27,57 @@ func (r *ProxyRepository) GetDB() *database.DB {
 	return r.db
 }
 
-// List retrieves proxies with pagination and filters
-func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, status, protocol, sortField, sortOrder string) ([]models.ProxyWithStats, int, error) {
+// proxySortExprs maps API sort keys to SQL ORDER BY expressions.
+var proxySortExprs = map[string]string{
+	"address":           "address",
+	"protocol":          "protocol",
+	"status":            "status",
+	"requests":          "requests",
+	"success_rate":      "CASE WHEN requests > 0 THEN (successful_requests::numeric / requests * 100) ELSE 0 END",
+	"avg_response_time": "avg_response_time",
+	"last_check":        "last_check",
+	"created_at":        "created_at",
+}
+
+const maxProxySortColumns = 5
+
+// buildProxyOrderClause builds ORDER BY for one or more sort columns.
+func buildProxyOrderClause(sortFields, sortOrders []string) string {
+	if len(sortFields) == 0 {
+		return "created_at DESC"
+	}
+	if len(sortFields) > maxProxySortColumns {
+		sortFields = sortFields[:maxProxySortColumns]
+	}
+	if len(sortOrders) > len(sortFields) {
+		sortOrders = sortOrders[:len(sortFields)]
+	}
+
+	var parts []string
+	for i, field := range sortFields {
+		order := "desc"
+		if i < len(sortOrders) && sortOrders[i] == "asc" {
+			order = "asc"
+		}
+		expr, ok := proxySortExprs[field]
+		if !ok {
+			expr = proxySortExprs["created_at"]
+		}
+		if field == "last_check" {
+			if order == "desc" {
+				expr += " NULLS LAST"
+			} else {
+				expr += " NULLS FIRST"
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", expr, order))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// List retrieves proxies with pagination and filters.
+// sortFields and sortOrders are parallel slices (first sort = primary).
+func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, status, protocol string, sortFields, sortOrders []string) ([]models.ProxyWithStats, int, error) {
 	// Build WHERE clause
 	whereClauses := []string{}
 	args := []interface{}{}
@@ -58,22 +107,7 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
-	// Validate and set sort field
-	validSortFields := map[string]bool{
-		"address":           true,
-		"status":            true,
-		"requests":          true,
-		"avg_response_time": true,
-		"created_at":        true,
-	}
-
-	if !validSortFields[sortField] {
-		sortField = "created_at"
-	}
-
-	if sortOrder != "asc" && sortOrder != "desc" {
-		sortOrder = "desc"
-	}
+	orderClause := buildProxyOrderClause(sortFields, sortOrders)
 
 	// Count total
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM proxies %s", whereClause)
@@ -94,9 +128,9 @@ func (r *ProxyRepository) List(ctx context.Context, page, limit int, search, sta
 			created_at, updated_at
 		FROM proxies
 		%s
-		ORDER BY %s %s
+		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, whereClause, sortField, sortOrder, argPos, argPos+1)
+	`, whereClause, orderClause, argPos, argPos+1)
 
 	args = append(args, limit, offset)
 

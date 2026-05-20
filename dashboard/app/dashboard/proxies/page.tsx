@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import {
+  Column,
   ColumnDef,
   ColumnFiltersState,
   SortingState,
@@ -14,6 +15,8 @@ import {
   useReactTable,
 } from "@tanstack/react-table"
 import {
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
   ChevronDown,
   MoreHorizontal,
@@ -76,6 +79,35 @@ import { api } from "@/lib/api"
 import { Proxy } from "@/lib/types"
 import { toast } from "@/lib/toast"
 
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200] as const
+
+/** Server-side multi-sort: click = replace sort; Shift+click = add/toggle column. */
+function SortableHeader<T>({ column, label }: { column: Column<T, unknown>; label: string }) {
+  const sorted = column.getIsSorted()
+  const sortIndex = column.getSortIndex()
+  return (
+    <Button
+      variant="ghost"
+      className="-ml-3 h-8"
+      onClick={(e) => column.toggleSorting(sorted === "asc", e.shiftKey)}
+    >
+      {label}
+      {sortIndex >= 0 && (
+        <span className="ml-1 flex h-4 w-4 items-center justify-center rounded bg-muted text-[10px] font-medium text-muted-foreground">
+          {sortIndex + 1}
+        </span>
+      )}
+      {sorted === "asc" ? (
+        <ArrowUp className="ml-1 h-4 w-4" />
+      ) : sorted === "desc" ? (
+        <ArrowDown className="ml-1 h-4 w-4" />
+      ) : (
+        <ArrowUpDown className="ml-1 h-4 w-4 text-muted-foreground" />
+      )}
+    </Button>
+  )
+}
+
 export default function ProxiesPage() {
   const [data, setData] = React.useState<Proxy[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
@@ -134,18 +166,17 @@ export default function ProxiesPage() {
     try {
       setIsLoading(true)
 
-      // Build sort parameters from sorting state
-      const sortField = sorting.length > 0 ? sorting[0].id : undefined
-      const sortOrder = sorting.length > 0 ? (sorting[0].desc ? "desc" : "asc") : undefined
-
       const response = await api.getProxies({
         page: pagination.page,
         limit: pagination.limit,
         search: debouncedSearchQuery || undefined,
         status: statusFilter === "all" ? undefined : statusFilter,
         protocol: protocolFilter === "all" ? undefined : protocolFilter,
-        sort: sortField,
-        order: sortOrder as "asc" | "desc" | undefined,
+        sort: sorting.length > 0 ? sorting.map((s) => s.id) : undefined,
+        order:
+          sorting.length > 0
+            ? sorting.map((s) => (s.desc ? "desc" : "asc"))
+            : undefined,
       })
       setData(response.proxies)
       setPagination(response.pagination)
@@ -446,22 +477,12 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "address",
-      header: ({ column }) => {
-        return (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          >
-            Address
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        )
-      },
+      header: ({ column }) => <SortableHeader column={column} label="Address" />,
       cell: ({ row }) => <div className="font-mono">{row.getValue("address")}</div>,
     },
     {
       accessorKey: "protocol",
-      header: "Protocol",
+      header: ({ column }) => <SortableHeader column={column} label="Protocol" />,
       cell: ({ row }) => (
         <Badge variant="outline" className="uppercase">
           {row.getValue("protocol")}
@@ -470,17 +491,7 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "status",
-      header: ({ column }) => {
-        return (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          >
-            Status
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        )
-      },
+      header: ({ column }) => <SortableHeader column={column} label="Status" />,
       cell: ({ row }) => {
         const status = row.getValue("status") as string
         const statusMap = {
@@ -507,17 +518,7 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "requests",
-      header: ({ column }) => {
-        return (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          >
-            Requests
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        )
-      },
+      header: ({ column }) => <SortableHeader column={column} label="Requests" />,
       cell: ({ row }) => {
         const value = parseFloat(row.getValue("requests"))
         return <div suppressHydrationWarning>{value.toLocaleString('en-US')}</div>
@@ -525,17 +526,7 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "success_rate",
-      header: ({ column }) => {
-        return (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          >
-            Success Rate
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        )
-      },
+      header: ({ column }) => <SortableHeader column={column} label="Success Rate" />,
       cell: ({ row }) => {
         const value = parseFloat(row.getValue("success_rate"))
         return <div>{value.toFixed(1)}%</div>
@@ -543,7 +534,7 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "avg_response_time",
-      header: "Avg Response",
+      header: ({ column }) => <SortableHeader column={column} label="Avg Response" />,
       cell: ({ row }) => {
         const value = parseFloat(row.getValue("avg_response_time"))
         return <div>{value}ms</div>
@@ -551,7 +542,22 @@ export default function ProxiesPage() {
     },
     {
       accessorKey: "last_check",
-      header: "Last Check",
+      header: ({ column }) => <SortableHeader column={column} label="Last Check" />,
+      cell: ({ row }) => {
+        const raw = row.getValue("last_check") as string | null | undefined
+        if (!raw) {
+          return <span className="text-muted-foreground">—</span>
+        }
+        const date = new Date(raw)
+        if (Number.isNaN(date.getTime())) {
+          return <span className="text-muted-foreground">—</span>
+        }
+        return (
+          <span className="text-muted-foreground whitespace-nowrap">
+            {date.toLocaleString()}
+          </span>
+        )
+      },
     },
     {
       id: "actions",
@@ -600,7 +606,10 @@ export default function ProxiesPage() {
   const table = useReactTable({
     data,
     columns,
-    onSortingChange: setSorting,
+    onSortingChange: (updater) => {
+      setSorting((prev) => (typeof updater === "function" ? updater(prev) : updater))
+      setPagination((prev) => ({ ...prev, page: 1 }))
+    },
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
@@ -608,6 +617,8 @@ export default function ProxiesPage() {
     manualPagination: true,
     manualSorting: true,
     manualFiltering: true,
+    enableMultiSort: true,
+    maxMultiSortColCount: 5,
     pageCount: pagination.total_pages,
     state: {
       sorting,
@@ -642,7 +653,7 @@ export default function ProxiesPage() {
             <div>
               <CardTitle>Proxies</CardTitle>
               <CardDescription>
-                {pagination.total} total proxies
+                {pagination.total} total proxies · Click a column to sort; Shift+click to add another (up to 5)
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
@@ -854,6 +865,30 @@ export default function ProxiesPage() {
                 {table.getFilteredRowModel().rows.length} row(s) selected.
               </div>
               <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Rows per page</span>
+                  <Select
+                    value={String(pagination.limit)}
+                    onValueChange={(value) => {
+                      setPagination(prev => ({
+                        ...prev,
+                        limit: Number(value),
+                        page: 1,
+                      }))
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-[72px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PAGE_SIZE_OPTIONS.map((size) => (
+                        <SelectItem key={size} value={String(size)}>
+                          {size}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="text-sm text-muted-foreground">
                   Page {pagination.page} of {pagination.total_pages} ({pagination.total} total proxies)
                 </div>

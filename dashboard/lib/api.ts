@@ -155,16 +155,27 @@ class ApiClient {
     search?: string
     status?: string
     protocol?: string
-    sort?: string
-    order?: "asc" | "desc"
+    /** One or more sort columns (server applies left-to-right). */
+    sort?: string | string[]
+    order?: ("asc" | "desc") | ("asc" | "desc")[]
   }): Promise<ProxiesResponse> {
     const searchParams = new URLSearchParams()
     if (params) {
-      Object.entries(params).forEach(([key, value]) => {
+      const { sort, order, ...rest } = params
+      Object.entries(rest).forEach(([key, value]) => {
         if (value !== undefined) {
           searchParams.append(key, value.toString())
         }
       })
+      const sorts = sort === undefined ? [] : Array.isArray(sort) ? sort : [sort]
+      for (const s of sorts) {
+        searchParams.append("sort", s)
+      }
+      const orders =
+        order === undefined ? [] : Array.isArray(order) ? order : [order]
+      for (const o of orders) {
+        searchParams.append("order", o)
+      }
     }
     const query = searchParams.toString()
     return this.request<ProxiesResponse>(
