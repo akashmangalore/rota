@@ -215,7 +215,7 @@ func connectViaProxyStandalone(p *models.Proxy, host string, settings *models.Ro
 	case "socks5":
 		return connectViaSocks5(p, host)
 	case "socks4", "socks4a":
-		return connectViaSocks5(p, host) // h12.io/socks handles socks4 too; close enough
+		return connectViaSocks4(p, host)
 	case "http", "https":
 		return connectViaHTTPStandalone(p, host, timeout)
 	default:

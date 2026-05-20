@@ -202,9 +202,14 @@ func (s *TimeBasedSelector) Select(ctx context.Context) (*models.Proxy, error) {
 		return nil, fmt.Errorf("no proxies available")
 	}
 
-	// Calculate index based on time intervals
+	intervalSecs := int64(s.interval.Seconds())
+	if intervalSecs <= 0 {
+		// Fallback to round-robin when interval is unconfigured
+		intervalSecs = 120
+	}
+
 	now := time.Now().Unix()
-	intervalCount := now / int64(s.interval.Seconds())
+	intervalCount := now / intervalSecs
 	index := int(intervalCount) % len(s.proxies)
 
 	return s.proxies[index], nil

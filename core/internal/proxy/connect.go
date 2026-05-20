@@ -9,6 +9,7 @@ import (
 
 	"github.com/alpkeskin/rota/core/internal/models"
 	proxyDialer "golang.org/x/net/proxy"
+	"h12.io/socks"
 )
 
 // connectViaSocks5 dials host through a SOCKS5 proxy.
@@ -28,6 +29,23 @@ func connectViaSocks5(p *models.Proxy, host string) (net.Conn, error) {
 	conn, err := dialer.Dial("tcp", host)
 	if err != nil {
 		return nil, fmt.Errorf("socks5 dial %s via %s: %w", host, p.Address, err)
+	}
+	return conn, nil
+}
+
+// connectViaSocks4 dials host through a SOCKS4 or SOCKS4A proxy using h12.io/socks.
+func connectViaSocks4(p *models.Proxy, host string) (net.Conn, error) {
+	scheme := p.Protocol // "socks4" or "socks4a"
+	proxyURL := scheme + "://"
+	if p.Username != nil && *p.Username != "" {
+		proxyURL += *p.Username + "@"
+	}
+	proxyURL += p.Address
+
+	dialFn := socks.Dial(proxyURL)
+	conn, err := dialFn("tcp", host)
+	if err != nil {
+		return nil, fmt.Errorf("socks4 dial %s via %s: %w", host, p.Address, err)
 	}
 	return conn, nil
 }

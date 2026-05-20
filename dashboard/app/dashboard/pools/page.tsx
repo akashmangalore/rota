@@ -299,7 +299,11 @@ export default function PoolsPage() {
             stopHcPoll()
             setHcRunning(false)
             if (job.status === "done") {
-              toast.success(`Health check done: ${job.active}/${job.progress} active`)
+              const extras = [
+                job.enriched > 0 ? `${job.enriched} geolocated` : "",
+                job.new_in_pool > 0 ? `${job.new_in_pool} added to pool` : "",
+              ].filter(Boolean).join(", ")
+              toast.success(`Health check done: ${job.active}/${job.progress} active${extras ? ` · ${extras}` : ""}`)
             } else {
               toast.error(`Health check failed: ${job.error}`)
             }
@@ -514,8 +518,17 @@ export default function PoolsPage() {
                     {hcJob && (
                       <CardContent className="pt-0 pb-3">
                         <div className="rounded-md bg-muted p-3 text-xs space-y-2">
-                          {/* Progress bar */}
-                          {(hcJob.status === "running" || hcJob.status === "pending") && hcJob.total > 0 && (
+
+                          {/* Enriching phase */}
+                          {hcJob.status === "enriching" && (
+                            <div className="flex items-center gap-2 text-yellow-500">
+                              <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                              <span>Enriching geo data &amp; syncing pool membership…</span>
+                            </div>
+                          )}
+
+                          {/* Running progress bar */}
+                          {hcJob.status === "running" && hcJob.total > 0 && (
                             <div>
                               <div className="flex justify-between mb-1">
                                 <span className="text-muted-foreground">
@@ -528,24 +541,38 @@ export default function PoolsPage() {
                               <Progress value={(hcJob.progress / hcJob.total) * 100} className="h-1.5" />
                             </div>
                           )}
-                          <div className="flex gap-4 flex-wrap">
-                            <span>Checked: <strong>{hcJob.progress}</strong>{hcJob.total > 0 && `/${hcJob.total}`}</span>
-                            <span className="text-green-500">Active: <strong>{hcJob.active}</strong></span>
-                            <span className="text-red-500">Failed: <strong>{hcJob.failed}</strong></span>
-                            {hcJob.status === "running" && (
-                              <span className="flex items-center gap-1 text-blue-500">
-                                <Loader2 className="h-3 w-3 animate-spin" />running
-                              </span>
-                            )}
-                            {hcJob.status === "done" && hcJob.finished_at && (
-                              <span className="text-muted-foreground">
-                                Done in {Math.round((new Date(hcJob.finished_at).getTime() - new Date(hcJob.started_at).getTime()) / 1000)}s
-                              </span>
-                            )}
-                            {hcJob.status === "failed" && (
-                              <span className="text-red-500">{hcJob.error}</span>
-                            )}
-                          </div>
+
+                          {/* Counts row — shown once we have some data */}
+                          {(hcJob.status === "running" || hcJob.status === "done") && (
+                            <div className="flex gap-4 flex-wrap">
+                              <span>Checked: <strong>{hcJob.progress}</strong>{hcJob.total > 0 && `/${hcJob.total}`}</span>
+                              <span className="text-green-500">Active: <strong>{hcJob.active}</strong></span>
+                              <span className="text-red-500">Failed: <strong>{hcJob.failed}</strong></span>
+                              {hcJob.status === "running" && (
+                                <span className="flex items-center gap-1 text-blue-500">
+                                  <Loader2 className="h-3 w-3 animate-spin" />running
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Done summary */}
+                          {hcJob.status === "done" && hcJob.finished_at && (
+                            <div className="flex gap-4 flex-wrap text-muted-foreground">
+                              <span>Done in {Math.round((new Date(hcJob.finished_at).getTime() - new Date(hcJob.started_at).getTime()) / 1000)}s</span>
+                              {hcJob.enriched > 0 && (
+                                <span className="text-yellow-500">+{hcJob.enriched} geolocated</span>
+                              )}
+                              {hcJob.new_in_pool > 0 && (
+                                <span className="text-blue-500">+{hcJob.new_in_pool} added to pool</span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Failed */}
+                          {hcJob.status === "failed" && (
+                            <span className="text-red-500">{hcJob.error}</span>
+                          )}
                         </div>
                       </CardContent>
                     )}

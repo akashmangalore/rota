@@ -311,7 +311,7 @@ export interface PoolHealthCheckResult {
   finished_at: string
 }
 
-export type HCJobStatus = "pending" | "running" | "done" | "failed"
+export type HCJobStatus = "pending" | "enriching" | "running" | "done" | "failed"
 
 export interface HCJob {
   id: string
@@ -322,6 +322,10 @@ export interface HCJob {
   total: number
   active: number
   failed: number
+  /** proxies that had no geo data and were enriched during the pre-HC phase */
+  enriched: number
+  /** proxies newly added to the pool during the pre-HC sync */
+  new_in_pool: number
   check_url: string
   workers: number
   error?: string

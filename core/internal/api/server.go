@@ -93,6 +93,7 @@ func New(cfg *config.Config, log *logger.Logger, db *database.DB) *Server {
 	// putting dead proxies back into rotation. Pool-level health checks (cron-
 	// scheduled per pool in PoolService) are the single source of truth.
 	poolSvc := services.NewPoolService(poolRepo, proxyRepo, log)
+	poolSvc.SetGeoEnricher(sourceSvc)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(settingsRepo, adminRepo, log, jwtSecret, cfg.AdminUser, cfg.AdminPass)

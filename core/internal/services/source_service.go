@@ -100,8 +100,8 @@ type SourceService struct {
 	logger     *logger.Logger
 	client     *http.Client
 
-	mu     sync.Mutex
-	stopCh chan struct{}
+	// fetchRunning prevents concurrent fetchDueSources runs; uses TryLock pattern.
+	mu sync.Mutex
 }
 
 // NewSourceService creates a new SourceService.
@@ -119,7 +119,6 @@ func NewSourceService(
 		geoSvc:     geoSvc,
 		logger:     log,
 		client:     &http.Client{Timeout: 30 * time.Second},
-		stopCh:     make(chan struct{}),
 	}
 }
 
@@ -162,8 +161,13 @@ func (s *SourceService) FetchNow(ctx context.Context, sourceID int) (*models.Pro
 }
 
 // fetchDueSources finds all sources that are overdue and fetches them.
+// Uses TryLock so that a slow fetch does not queue up duplicate runs from the
+// 1-minute ticker; the next tick will catch any sources that are still due.
 func (s *SourceService) fetchDueSources(ctx context.Context) {
-	s.mu.Lock()
+	if !s.mu.TryLock() {
+		s.logger.Info("fetchDueSources already running, skipping this tick")
+		return
+	}
 	defer s.mu.Unlock()
 
 	sources, err := s.sourceRepo.GetDueForFetch(ctx)
@@ -185,9 +189,8 @@ func (s *SourceService) fetchDueSources(ctx context.Context) {
 				"imported", imported, "total", total)
 		}
 	}
-
-	// After all sources are fetched, re-sync all auto_sync pools
-	go s.syncAllPools(ctx)
+	// Pool sync is now chained inside each fetchAndImport goroutine (after enrichment),
+	// so no separate syncAllPools call is needed here.
 }
 
 // syncAllPools re-syncs all auto_sync pools — called after a fetch batch completes
@@ -248,7 +251,10 @@ func (s *SourceService) fetchAndImport(ctx context.Context, src *models.ProxySou
 		addresses = append(addresses, p.address)
 	}
 
-	created, _ := s.bulkUpsert(ctx, requests)
+	created, failed := s.bulkUpsert(ctx, requests)
+	if failed > 0 {
+		s.logger.Warn("some proxies failed to upsert", "source_id", src.ID, "failed", failed, "total", total)
+	}
 
 	// Stamp every address present in this fetch as "last seen now" so the
 	// soft-cleanup cron knows they're still live.
@@ -268,8 +274,14 @@ func (s *SourceService) fetchAndImport(ctx context.Context, src *models.ProxySou
 		}
 	}
 
-	// Enrich geo data in the background
-	go s.enrichGeo(context.Background(), addresses)
+	// Enrich geo data then sync pools in a single goroutine so that pool sync
+	// always runs AFTER enrichment — not concurrently with it.
+	go func() {
+		enrichCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		s.enrichGeo(enrichCtx, addresses)
+		s.syncAllPools(enrichCtx)
+	}()
 
 	return created, total, nil
 }
@@ -334,11 +346,11 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 	for rows.Next() {
 		var addr string
 		if err := rows.Scan(&addr); err != nil {
+			s.logger.Warn("EnrichAll: failed to scan address", "error", err)
 			continue
 		}
 		addresses = append(addresses, addr)
 	}
-	rows.Close()
 
 	if len(addresses) == 0 {
 		return 0, nil
@@ -346,7 +358,7 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 
 	geos := s.geoSvc.EnrichProxies(ctx, addresses)
 	for addr, geo := range geos {
-		s.proxyRepo.GetDB().Pool.Exec(ctx, `
+		if _, err := s.proxyRepo.GetDB().Pool.Exec(ctx, `
 			UPDATE proxies SET
 				country_code   = $1,
 				country_name   = $2,
@@ -358,11 +370,18 @@ func (s *SourceService) EnrichAll(ctx context.Context) (int, error) {
 				geo_updated_at = NOW()
 			WHERE address = $8
 		`, geo.CountryCode, geo.CountryName, geo.RegionName, geo.CityName,
-			geo.Latitude, geo.Longitude, geo.ISP, addr)
+			geo.Latitude, geo.Longitude, geo.ISP, addr); err != nil {
+			s.logger.Warn("EnrichAll: failed to update geo for proxy", "address", addr, "error", err)
+		}
 	}
 
-	// Re-sync pools now that geo data has changed
-	go s.syncAllPools(context.Background())
+	// Re-sync pools now that geo data has changed; use a detached context so
+	// cancelling the HTTP request ctx doesn't abort the sync.
+	syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	go func() {
+		defer cancel()
+		s.syncAllPools(syncCtx)
+	}()
 
 	return len(geos), nil
 }

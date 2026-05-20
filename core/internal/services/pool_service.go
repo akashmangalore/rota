@@ -15,17 +15,18 @@ import (
 	"github.com/gammazero/workerpool"
 )
 
-// PoolService manages proxy pools: auto-sync by geo, health checks, rotation state
-type PoolService struct {
-	poolRepo  *repository.PoolRepository
-	proxyRepo *repository.ProxyRepository
-	logger    *logger.Logger
+// GeoEnricher enriches proxies that are missing geo data. Implemented by SourceService.
+type GeoEnricher interface {
+	EnrichAll(ctx context.Context) (int, error)
+}
 
-	// per-pool rotation state (roundrobin index, stick counters)
-	mu          sync.Mutex
-	rrIndex     map[int]int   // pool_id -> current roundrobin index
-	stickCur    map[int]int   // pool_id -> current proxy index in stick mode
-	stickCount  map[int]int   // pool_id -> requests served on current proxy
+// PoolService manages proxy pools: auto-sync by geo and scheduled health checks.
+// Per-pool rotation state is owned by proxy.PoolSelector (see pool_selector.go).
+type PoolService struct {
+	poolRepo    *repository.PoolRepository
+	proxyRepo   *repository.ProxyRepository
+	logger      *logger.Logger
+	geoEnricher GeoEnricher // optional; enriches ungeolocated proxies before sync/HC
 }
 
 // NewPoolService creates a new PoolService
@@ -35,13 +36,16 @@ func NewPoolService(
 	log *logger.Logger,
 ) *PoolService {
 	return &PoolService{
-		poolRepo:   poolRepo,
-		proxyRepo:  proxyRepo,
-		logger:     log,
-		rrIndex:    make(map[int]int),
-		stickCur:   make(map[int]int),
-		stickCount: make(map[int]int),
+		poolRepo:  poolRepo,
+		proxyRepo: proxyRepo,
+		logger:    log,
 	}
+}
+
+// SetGeoEnricher wires a GeoEnricher so that pool HCs and auto-sync first
+// enrich any proxies that are missing geo data.
+func (ps *PoolService) SetGeoEnricher(e GeoEnricher) {
+	ps.geoEnricher = e
 }
 
 // Start launches background cron-like goroutine for pool health checks and auto-sync
@@ -53,6 +57,15 @@ func (ps *PoolService) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
+				// Enrich up to 500 ungeolocated proxies before sync and HC so
+				// that newly geolocated proxies are picked up in the same pass.
+				if ps.geoEnricher != nil {
+					if enriched, err := ps.geoEnricher.EnrichAll(ctx); err != nil {
+						ps.logger.Warn("periodic geo enrichment failed", "error", err)
+					} else if enriched > 0 {
+						ps.logger.Info("periodic geo enrichment completed", "count", enriched)
+					}
+				}
 				ps.runScheduledHealthChecks(ctx)
 				ps.runAutoSync(ctx)
 			case <-ctx.Done():
@@ -197,7 +210,41 @@ func (ps *PoolService) checkProxiesByIDs(ctx context.Context, checkURL string, p
 	return nil
 }
 
-// HealthCheckPool tests all proxies in a pool against the pool's custom URL
+// EnrichAndSyncPool enriches up to 500 ungeolocated proxies then re-syncs the
+// given pool so newly geolocated proxies are included before a health check runs.
+// Returns (enriched, newInPool) counts.
+func (ps *PoolService) EnrichAndSyncPool(ctx context.Context, poolID int) (enriched int, newInPool int) {
+	if ps.geoEnricher != nil {
+		enrichCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		var err error
+		enriched, err = ps.geoEnricher.EnrichAll(enrichCtx)
+		if err != nil {
+			ps.logger.Warn("pre-HC geo enrichment failed", "pool_id", poolID, "error", err)
+			enriched = 0
+		} else if enriched > 0 {
+			ps.logger.Info("pre-HC enriched proxies", "pool_id", poolID, "count", enriched)
+		}
+	}
+
+	// Sync pool membership using filters (no mini-HC on new members here;
+	// the main HC call that follows will check all members including new ones).
+	pool, err := ps.poolRepo.GetByID(ctx, poolID)
+	if err != nil || pool == nil {
+		return
+	}
+	_, newIDs, err := ps.poolRepo.SyncPoolByFilters(ctx, *pool)
+	if err != nil {
+		ps.logger.Warn("pre-HC pool sync failed", "pool_id", poolID, "error", err)
+		return
+	}
+	newInPool = len(newIDs)
+	return
+}
+
+// HealthCheckPool tests all proxies in a pool against the pool's custom URL.
+// Scheduled calls rely on the per-minute ticker enrichment; manual/async calls
+// go through RunPoolHealthCheckAsync which handles the enriching phase separately.
 func (ps *PoolService) HealthCheckPool(ctx context.Context, poolID int, checkURL string, workers int) (*models.PoolHealthCheckResult, error) {
 	pool, err := ps.poolRepo.GetByID(ctx, poolID)
 	if err != nil || pool == nil {
@@ -333,6 +380,7 @@ func (ps *PoolService) updateProxyStatus(ctx context.Context, proxyID int, statu
 
 // HealthCheckPoolWithProgress is like HealthCheckPool but calls progressFn after each proxy finishes.
 // progressFn receives (checked_so_far, active_so_far, failed_so_far).
+// Enrichment is handled by the caller (RunPoolHealthCheckAsync) before this is invoked.
 func (ps *PoolService) HealthCheckPoolWithProgress(
 	ctx context.Context,
 	poolID int,

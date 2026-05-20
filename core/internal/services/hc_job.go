@@ -14,10 +14,11 @@ import (
 type HCJobStatus string
 
 const (
-	HCJobPending  HCJobStatus = "pending"
-	HCJobRunning  HCJobStatus = "running"
-	HCJobDone     HCJobStatus = "done"
-	HCJobFailed   HCJobStatus = "failed"
+	HCJobPending   HCJobStatus = "pending"
+	HCJobEnriching HCJobStatus = "enriching" // enriching geo data + syncing pool membership
+	HCJobRunning   HCJobStatus = "running"
+	HCJobDone      HCJobStatus = "done"
+	HCJobFailed    HCJobStatus = "failed"
 )
 
 // HCJob holds state for one async pool health-check run
@@ -26,10 +27,12 @@ type HCJob struct {
 	PoolID    int         `json:"pool_id"`
 	PoolName  string      `json:"pool_name"`
 	Status    HCJobStatus `json:"status"`
-	Progress  int         `json:"progress"`  // checked so far
-	Total     int         `json:"total"`     // total proxies
+	Progress  int         `json:"progress"`   // proxies checked so far
+	Total     int         `json:"total"`      // total proxies in pool (updated after enrich+sync)
 	Active    int         `json:"active"`
 	Failed    int         `json:"failed"`
+	Enriched  int         `json:"enriched"`   // proxies geolocated during pre-HC enrichment
+	NewInPool int         `json:"new_in_pool"` // proxies added to pool during pre-HC sync
 	CheckURL  string      `json:"check_url"`
 	Workers   int         `json:"workers"`
 	Error     string      `json:"error,omitempty"`
@@ -128,7 +131,7 @@ func (s *HCJobStore) ListByPool(poolID int) []*HCJob {
 }
 
 // RunPoolHealthCheckAsync starts the health check in a goroutine and returns job_id immediately.
-// It calls poolSvc.HealthCheckPoolWithProgress which updates the job store as proxies are checked.
+// Flow: pending → enriching (geo enrich + pool sync) → running (proxy HC) → done/failed.
 func RunPoolHealthCheckAsync(
 	ctx context.Context,
 	poolSvc *PoolService,
@@ -144,27 +147,36 @@ func RunPoolHealthCheckAsync(
 		workers = 20
 	}
 
-	// Get proxy count upfront so frontend can show progress %
-	proxies, _ := poolSvc.poolRepo.GetProxies(ctx, poolID)
-
 	job := store.Create(poolID, poolName, checkURL, workers)
-	store.Update(job.ID, func(j *HCJob) {
-		j.Total = len(proxies)
-	})
 
 	go func() {
+		bgCtx := context.Background() // detached so UI disconnect doesn't kill the job
+
+		// ── Phase 1: enrich geo + sync pool membership ────────────────────
 		store.Update(job.ID, func(j *HCJob) {
-			j.Status = HCJobRunning
+			j.Status = HCJobEnriching
 		})
 
+		enriched, newInPool := poolSvc.EnrichAndSyncPool(bgCtx, poolID)
+
+		// Re-fetch accurate proxy count after enrich+sync
+		proxies, _ := poolSvc.poolRepo.GetProxies(bgCtx, poolID)
+		store.Update(job.ID, func(j *HCJob) {
+			j.Status    = HCJobRunning
+			j.Enriched  = enriched
+			j.NewInPool = newInPool
+			j.Total     = len(proxies)
+		})
+
+		// ── Phase 2: health check all pool members ────────────────────────
 		result, err := poolSvc.HealthCheckPoolWithProgress(
-			context.Background(), // use background so UI disconnect doesn't kill it
+			bgCtx,
 			poolID, checkURL, workers,
 			func(checked, active, failed int) {
 				store.Update(job.ID, func(j *HCJob) {
 					j.Progress = checked
-					j.Active = active
-					j.Failed = failed
+					j.Active   = active
+					j.Failed   = failed
 				})
 			},
 		)
@@ -172,20 +184,20 @@ func RunPoolHealthCheckAsync(
 		now := time.Now()
 		if err != nil {
 			store.Update(job.ID, func(j *HCJob) {
-				j.Status = HCJobFailed
-				j.Error = err.Error()
+				j.Status     = HCJobFailed
+				j.Error      = err.Error()
 				j.FinishedAt = &now
 			})
 			return
 		}
 
 		store.Update(job.ID, func(j *HCJob) {
-			j.Status = HCJobDone
-			j.Total = result.Checked
-			j.Active = result.Active
-			j.Failed = result.Failed
-			j.Progress = result.Checked
-			j.Results = result.Results
+			j.Status     = HCJobDone
+			j.Total      = result.Checked
+			j.Active     = result.Active
+			j.Failed     = result.Failed
+			j.Progress   = result.Checked
+			j.Results    = result.Results
 			j.FinishedAt = &now
 		})
 	}()

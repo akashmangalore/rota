@@ -151,41 +151,44 @@ func (t *UsageTracker) UpdateProxyStatus(ctx context.Context, proxyID int, statu
 	return err
 }
 
-// RecordHealthCheck records a health check result
+// RecordHealthCheck records a health check result and updates proxy status using
+// the same 3-consecutive-failures rule as request tracking.
 func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, success bool, responseTime int, errorMsg string) error {
 	now := time.Now()
-
-	status := "active"
-	if !success {
-		// Check how many consecutive failures
-		var failedRequests int64
-		query := `SELECT failed_requests FROM proxies WHERE id = $1`
-		if err := t.repo.GetDB().Pool.QueryRow(ctx, query, proxyID).Scan(&failedRequests); err != nil {
-			return err
-		}
-
-		// Mark as failed after 3 consecutive failures
-		if failedRequests >= 2 {
-			status = "failed"
-		}
-	}
-
-	query := `
-		UPDATE proxies
-		SET
-			last_check = $1,
-			last_error = $2,
-			status = $3,
-			updated_at = NOW()
-		WHERE id = $4
-	`
 
 	var lastError *string
 	if errorMsg != "" {
 		lastError = &errorMsg
 	}
 
-	_, err := t.repo.GetDB().Pool.Exec(ctx, query, now, lastError, status, proxyID)
+	if success {
+		_, err := t.repo.GetDB().Pool.Exec(ctx, `
+			UPDATE proxies
+			SET
+				last_check      = $1,
+				last_error      = NULL,
+				failed_requests = 0,
+				status          = 'active',
+				updated_at      = NOW()
+			WHERE id = $2
+		`, now, proxyID)
+		return err
+	}
+
+	// Failure: increment counter then decide status
+	_, err := t.repo.GetDB().Pool.Exec(ctx, `
+		UPDATE proxies
+		SET
+			last_check      = $1,
+			last_error      = $2,
+			failed_requests = failed_requests + 1,
+			status          = CASE
+				WHEN (failed_requests + 1) >= 3 THEN 'failed'
+				ELSE status
+			END,
+			updated_at = NOW()
+		WHERE id = $3
+	`, now, lastError, proxyID)
 	return err
 }
 
@@ -193,8 +196,8 @@ func (t *UsageTracker) RecordHealthCheck(ctx context.Context, proxyID int, succe
 func (t *UsageTracker) GetRecentRequests(ctx context.Context, proxyID int, limit int) ([]RequestRecord, error) {
 	query := `
 		SELECT
-			proxy_id, method, url, status, response_time,
-			COALESCE(error_message, '') as error_message, timestamp
+			proxy_id, method, url, success, response_time,
+			COALESCE(error, '') AS error, timestamp
 		FROM proxy_requests
 		WHERE proxy_id = $1
 		ORDER BY timestamp DESC
@@ -210,13 +213,11 @@ func (t *UsageTracker) GetRecentRequests(ctx context.Context, proxyID int, limit
 	records := make([]RequestRecord, 0, limit)
 	for rows.Next() {
 		var record RequestRecord
-		var status string
-
 		err := rows.Scan(
 			&record.ProxyID,
 			&record.Method,
 			&record.RequestedURL,
-			&status,
+			&record.Success,
 			&record.ResponseTime,
 			&record.ErrorMessage,
 			&record.Timestamp,
@@ -224,8 +225,6 @@ func (t *UsageTracker) GetRecentRequests(ctx context.Context, proxyID int, limit
 		if err != nil {
 			return nil, err
 		}
-
-		record.Success = (status == "success")
 		records = append(records, record)
 	}
 

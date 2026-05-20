@@ -28,18 +28,18 @@ type ipAPIResponse struct {
 }
 
 type cacheEntry struct {
-	geo       models.GeoInfo
-	cachedAt  time.Time
+	geo      models.GeoInfo
+	cachedAt time.Time
 }
 
-// GeoIPService performs IP geolocation lookups via ip-api.com (free, no key needed)
+// GeoIPService performs IP geolocation lookups via ip-api.com (free, no key needed).
 // It caches results for 24 h and batches requests in groups of 100.
 type GeoIPService struct {
-	client    *http.Client
-	cache     map[string]cacheEntry
-	mu        sync.RWMutex
-	logger    *logger.Logger
-	cacheTTL  time.Duration
+	client   *http.Client
+	cache    map[string]cacheEntry
+	mu       sync.RWMutex
+	logger   *logger.Logger
+	cacheTTL time.Duration
 }
 
 // NewGeoIPService creates a new GeoIPService
@@ -58,7 +58,6 @@ func NewGeoIPService(log *logger.Logger) *GeoIPService {
 func extractIP(address string) string {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
-		// maybe no port
 		return strings.TrimSpace(address)
 	}
 	return strings.TrimSpace(host)
@@ -80,113 +79,49 @@ func (g *GeoIPService) LookupOne(ctx context.Context, address string) (*models.G
 	}
 	g.mu.RUnlock()
 
-	results, err := g.lookupBatch(ctx, []string{ip})
+	// lookupBatchRaw already writes to cache; fetch and return the specific IP's result.
+	raw, err := g.lookupBatchRaw(ctx, []string{ip})
 	if err != nil {
 		return nil, err
 	}
-	if len(results) == 0 {
+	geo, ok := raw[ip]
+	if !ok {
 		return nil, fmt.Errorf("no result for %s", ip)
 	}
-	return &results[0], nil
+	return &geo, nil
 }
 
-// LookupBatch resolves GeoInfo for up to 100 addresses at once.
-// Returns map[address] -> GeoInfo.
-func (g *GeoIPService) LookupBatch(ctx context.Context, addresses []string) map[string]models.GeoInfo {
-	result := make(map[string]models.GeoInfo)
-
-	// deduplicate & separate cached vs needed
-	ipToAddr := make(map[string]string) // ip -> original address
-	var needed []string
-
-	g.mu.RLock()
-	for _, addr := range addresses {
-		ip := extractIP(addr)
-		if ip == "" {
-			continue
-		}
-		ipToAddr[ip] = addr
-		if entry, ok := g.cache[ip]; ok && time.Since(entry.cachedAt) < g.cacheTTL {
-			result[addr] = entry.geo
-		} else {
-			needed = append(needed, ip)
-		}
-	}
-	g.mu.RUnlock()
-
-	if len(needed) == 0 {
-		return result
-	}
-
-	// ip-api.com free tier allows 100 queries/min; batch max = 100
-	const batchSize = 100
-	for i := 0; i < len(needed); i += batchSize {
-		end := i + batchSize
-		if end > len(needed) {
-			end = len(needed)
-		}
-		batch := needed[i:end]
-
-		geos, err := g.lookupBatch(ctx, batch)
-		if err != nil {
-			g.logger.Warn("geoip batch lookup failed", "error", err)
-			continue
-		}
-		for _, geo := range geos {
-			ip := geo.CountryCode // we store query ip separately below
-			_ = ip
-		}
-		// map back by query field
-		for _, geo := range geos {
-			addr := ipToAddr[geo.CityName] // placeholder - we rebuild from raw
-			_ = addr
-		}
-		// We need the raw ip from the batch response — handled inside lookupBatch
-		for _, geo := range geos {
-			// geo.CityName was set as IP in the temporary struct trick; we use a proper workaround below
-			_ = geo
-		}
-	}
-
-	// simpler: refactor to use raw response
-	rawGeos, err := g.lookupBatchRaw(ctx, needed)
-	if err != nil {
-		g.logger.Warn("geoip batch lookup failed", "error", err)
-		return result
-	}
-
-	g.mu.Lock()
-	for ip, geo := range rawGeos {
-		g.cache[ip] = cacheEntry{geo: geo, cachedAt: time.Now()}
-		if origAddr, ok := ipToAddr[ip]; ok {
-			result[origAddr] = geo
-		}
-	}
-	g.mu.Unlock()
-
-	return result
-}
-
-// lookupBatch fetches geo data for a slice of IPs (max 100)
-func (g *GeoIPService) lookupBatch(ctx context.Context, ips []string) ([]models.GeoInfo, error) {
-	raw, err := g.lookupBatchRaw(ctx, ips)
-	if err != nil {
-		return nil, err
-	}
-	var out []models.GeoInfo
-	for _, v := range raw {
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-// lookupBatchRaw fetches geo data and returns map[ip] -> GeoInfo
+// lookupBatchRaw fetches geo data for the given IPs and returns map[ip]->GeoInfo.
+// Internally chunked to 100 IPs per request (ip-api.com limit). Results are cached.
 func (g *GeoIPService) lookupBatchRaw(ctx context.Context, ips []string) (map[string]models.GeoInfo, error) {
 	if len(ips) == 0 {
 		return nil, nil
 	}
 
-	// Build JSON body: [{"query":"1.2.3.4","fields":"..."}, ...]
+	const batchSize = 100
+	result := make(map[string]models.GeoInfo, len(ips))
+
+	for i := 0; i < len(ips); i += batchSize {
+		end := i + batchSize
+		if end > len(ips) {
+			end = len(ips)
+		}
+		batch := ips[i:end]
+
+		chunk, err := g.fetchBatch(ctx, batch)
+		if err != nil {
+			return result, fmt.Errorf("geoip batch %d-%d: %w", i, end, err)
+		}
+		for ip, geo := range chunk {
+			result[ip] = geo
+		}
+	}
+	return result, nil
+}
+
+// fetchBatch sends a single POST to ip-api.com for up to 100 IPs, caches results,
+// and returns map[ip]->GeoInfo.
+func (g *GeoIPService) fetchBatch(ctx context.Context, ips []string) (map[string]models.GeoInfo, error) {
 	type reqItem struct {
 		Query  string `json:"query"`
 		Fields string `json:"fields"`
@@ -225,7 +160,6 @@ func (g *GeoIPService) lookupBatchRaw(ctx context.Context, ips []string) (map[st
 
 	result := make(map[string]models.GeoInfo, len(responses))
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	for _, r := range responses {
 		if r.Status != "success" {
 			continue
@@ -242,10 +176,11 @@ func (g *GeoIPService) lookupBatchRaw(ctx context.Context, ips []string) (map[st
 		result[r.Query] = geo
 		g.cache[r.Query] = cacheEntry{geo: geo, cachedAt: time.Now()}
 	}
+	g.mu.Unlock()
 	return result, nil
 }
 
-// EnrichProxies calls ip-api.com for all addresses and returns map[address]->GeoInfo
+// EnrichProxies calls ip-api.com for all addresses and returns map[address]->GeoInfo.
 func (g *GeoIPService) EnrichProxies(ctx context.Context, addresses []string) map[string]models.GeoInfo {
 	if len(addresses) == 0 {
 		return nil
@@ -267,7 +202,7 @@ func (g *GeoIPService) EnrichProxies(ctx context.Context, addresses []string) ma
 
 	result := make(map[string]models.GeoInfo)
 
-	// Check cache
+	// Serve from cache where possible
 	var needed []string
 	g.mu.RLock()
 	for _, ip := range ips {
@@ -285,23 +220,15 @@ func (g *GeoIPService) EnrichProxies(ctx context.Context, addresses []string) ma
 		return result
 	}
 
-	const batchSize = 100
-	for i := 0; i < len(needed); i += batchSize {
-		end := i + batchSize
-		if end > len(needed) {
-			end = len(needed)
-		}
-		batch := needed[i:end]
-
-		raw, err := g.lookupBatchRaw(ctx, batch)
-		if err != nil {
-			g.logger.Warn("geoip enrichment batch failed", "error", err, "ips", len(batch))
-			continue
-		}
-		for ip, geo := range raw {
-			if addr, ok := ipToAddr[ip]; ok {
-				result[addr] = geo
-			}
+	// lookupBatchRaw handles chunking internally
+	raw, err := g.lookupBatchRaw(ctx, needed)
+	if err != nil {
+		g.logger.Warn("geoip enrichment failed", "error", err, "ips", len(needed))
+		return result
+	}
+	for ip, geo := range raw {
+		if addr, ok := ipToAddr[ip]; ok {
+			result[addr] = geo
 		}
 	}
 
