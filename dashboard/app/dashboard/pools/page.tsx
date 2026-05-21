@@ -639,41 +639,43 @@ export default function PoolsPage() {
                           No proxies. Use Sync to populate from geo filters.
                         </p>
                       ) : (
-                        <>
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead className="text-xs">Address</TableHead>
-                                <TableHead className="text-xs">Geo</TableHead>
-                                <TableHead className="text-xs">Status</TableHead>
-                                <TableHead className="text-xs text-right">RT</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {poolProxies.map(pp => (
-                                <TableRow key={pp.proxy_id}>
-                                  <TableCell className="text-xs font-mono">{pp.address}</TableCell>
-                                  <TableCell className="text-xs">
-                                    <span className="flex items-center gap-1">
-                                      {pp.country_code && (
-                                        <img src={FLAG_CDN(pp.country_code)} alt={pp.country_code} className="h-3" />
-                                      )}
-                                      {pp.city_name || pp.country_name || "—"}
-                                    </span>
-                                  </TableCell>
-                                  <TableCell className="text-xs">
-                                    <span className={statusColor(pp.status)}>
-                                      {pp.status}
-                                    </span>
-                                  </TableCell>
-                                  <TableCell className="text-xs text-right text-muted-foreground">
-                                    {pp.avg_response_time ? `${pp.avg_response_time}ms` : "—"}
-                                  </TableCell>
+                        <div className="flex flex-col">
+                          <div className="max-h-80 overflow-auto">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead className="text-xs">Address</TableHead>
+                                  <TableHead className="text-xs">Geo</TableHead>
+                                  <TableHead className="text-xs">Status</TableHead>
+                                  <TableHead className="text-xs text-right">RT</TableHead>
                                 </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                          <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2">
+                              </TableHeader>
+                              <TableBody>
+                                {poolProxies.map(pp => (
+                                  <TableRow key={pp.proxy_id}>
+                                    <TableCell className="text-xs font-mono">{pp.address}</TableCell>
+                                    <TableCell className="text-xs">
+                                      <span className="flex items-center gap-1">
+                                        {pp.country_code && (
+                                          <img src={FLAG_CDN(pp.country_code)} alt={pp.country_code} className="h-3" />
+                                        )}
+                                        {pp.city_name || pp.country_name || "—"}
+                                      </span>
+                                    </TableCell>
+                                    <TableCell className="text-xs">
+                                      <span className={statusColor(pp.status)}>
+                                        {pp.status}
+                                      </span>
+                                    </TableCell>
+                                    <TableCell className="text-xs text-right text-muted-foreground">
+                                      {pp.avg_response_time ? `${pp.avg_response_time}ms` : "—"}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-card px-4 py-2">
                             <div className="flex items-center gap-2">
                               <span className="text-xs text-muted-foreground">Rows</span>
                               <Select
@@ -719,7 +721,7 @@ export default function PoolsPage() {
                               </Button>
                             </div>
                           </div>
-                        </>
+                        </div>
                       )}
                     </CardContent>
                   </Card>
