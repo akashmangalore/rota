@@ -53,7 +53,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Status, StatusIndicator, StatusLabel } from "@/components/ui/shadcn-io/status"
 import {
   Dialog,
