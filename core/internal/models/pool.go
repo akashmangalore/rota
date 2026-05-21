@@ -64,6 +64,12 @@ type PoolAlertPayload struct {
 	FiredAt       time.Time `json:"fired_at"`
 }
 
+// PoolProxyListResponse is a paginated list of proxies in a pool
+type PoolProxyListResponse struct {
+	Proxies    []PoolProxy    `json:"proxies"`
+	Pagination PaginationMeta `json:"pagination"`
+}
+
 // PoolProxy is the join between a pool and a proxy (with stats)
 type PoolProxy struct {
 	ProxyID         int        `json:"proxy_id"`

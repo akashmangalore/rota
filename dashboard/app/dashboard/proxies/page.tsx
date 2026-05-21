@@ -53,7 +53,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Status, StatusIndicator, StatusLabel } from "@/components/ui/shadcn-io/status"
 import {
   Dialog,
@@ -93,13 +93,24 @@ function SortableHeader<T>({
 }) {
   const sorted = column.getIsSorted()
   const sortIndex = column.getSortIndex()
-  // First column: replace mode. Once any sort is active, further clicks add or toggle in place.
+  // First column with no sorts: replace. With sorts active: add column or cycle asc → desc → clear.
   const isMulti = activeSortCount > 0
+
+  const handleSortClick = () => {
+    if (!sorted) {
+      column.toggleSorting(false, isMulti)
+    } else if (sorted === "asc") {
+      column.toggleSorting(true, true)
+    } else {
+      column.clearSorting()
+    }
+  }
+
   return (
     <Button
       variant="ghost"
       className="-ml-3 h-8"
-      onClick={() => column.toggleSorting(sorted === "asc", isMulti)}
+      onClick={handleSortClick}
     >
       {label}
       {sortIndex >= 0 && (
@@ -677,7 +688,7 @@ export default function ProxiesPage() {
             <div>
               <CardTitle>Proxies</CardTitle>
               <CardDescription>
-                {pagination.total} total proxies · Click columns to add sorts (1, 2, … up to 5); click again to toggle asc/desc
+                {pagination.total} total proxies
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">

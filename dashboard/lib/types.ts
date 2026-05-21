@@ -293,6 +293,16 @@ export interface PoolProxy {
   added_at: string
 }
 
+export interface PoolProxiesResponse {
+  proxies: PoolProxy[]
+  pagination: {
+    page: number
+    limit: number
+    total: number
+    total_pages: number
+  }
+}
+
 export interface GeoSummaryItem {
   country_code: string
   country_name: string

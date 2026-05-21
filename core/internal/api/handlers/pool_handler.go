@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,6 +220,41 @@ func (h *PoolHandler) GetProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"proxies": proxies})
+}
+
+// ListProxiesPaginated returns a paginated slice of pool proxies (dashboard table)
+func (h *PoolHandler) ListProxiesPaginated(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+
+	proxies, total, err := h.poolRepo.ListProxies(r.Context(), id, page, limit)
+	if err != nil {
+		http.Error(w, `{"error":"failed to list pool proxies"}`, http.StatusInternalServerError)
+		return
+	}
+
+	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+	writeJSON(w, http.StatusOK, models.PoolProxyListResponse{
+		Proxies: proxies,
+		Pagination: models.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
 }
 
 // AddProxies adds proxy IDs to a pool

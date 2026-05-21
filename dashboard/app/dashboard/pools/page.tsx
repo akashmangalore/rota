@@ -46,6 +46,8 @@ const FLAG_CDN = (cc: string) =>
 const statusColor = (s: string) =>
   s === "active" ? "text-green-500" : s === "failed" ? "text-red-500" : "text-yellow-500"
 
+const POOL_PROXIES_PAGE_SIZES = [25, 50, 100] as const
+
 const DEFAULT_POOL_FORM: CreatePoolRequest = {
   name: "",
   description: "",
@@ -79,6 +81,10 @@ export default function PoolsPage() {
   const [selectedPool, setSelectedPool] = useState<ProxyPool | null>(null)
   const [poolProxies, setPoolProxies] = useState<PoolProxy[]>([])
   const [poolProxiesLoading, setPoolProxiesLoading] = useState(false)
+  const [poolProxiesPage, setPoolProxiesPage] = useState(1)
+  const [poolProxiesLimit, setPoolProxiesLimit] = useState(50)
+  const [poolProxiesTotal, setPoolProxiesTotal] = useState(0)
+  const [poolProxiesTotalPages, setPoolProxiesTotalPages] = useState(0)
   const [hcJob, setHcJob] = useState<HCJob | null>(null)
   const [hcRunning, setHcRunning] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -120,6 +126,43 @@ export default function PoolsPage() {
   }, [])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  const loadPoolProxies = useCallback(async (
+    poolId: number,
+    page: number,
+    limit: number,
+    opts?: { cancelled?: () => boolean },
+  ) => {
+    setPoolProxiesLoading(true)
+    try {
+      const res = await api.listPoolProxies(poolId, page, limit)
+      if (opts?.cancelled?.()) return
+      setPoolProxies(res.proxies)
+      setPoolProxiesPage(res.pagination.page)
+      setPoolProxiesLimit(res.pagination.limit)
+      setPoolProxiesTotal(res.pagination.total)
+      setPoolProxiesTotalPages(res.pagination.total_pages)
+    } catch {
+      if (opts?.cancelled?.()) return
+      toast.error("Failed to load pool proxies")
+      setPoolProxies([])
+      setPoolProxiesTotal(0)
+      setPoolProxiesTotalPages(0)
+    } finally {
+      if (!opts?.cancelled?.()) {
+        setPoolProxiesLoading(false)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!selectedPool) return
+    let cancelled = false
+    loadPoolProxies(selectedPool.id, poolProxiesPage, poolProxiesLimit, {
+      cancelled: () => cancelled,
+    })
+    return () => { cancelled = true }
+  }, [selectedPool?.id, poolProxiesPage, poolProxiesLimit, loadPoolProxies])
 
   const openCreate = () => {
     setEditPool(null)
@@ -189,18 +232,13 @@ export default function PoolsPage() {
   const handleSelectPool = async (pool: ProxyPool) => {
     setSelectedPool(pool)
     setHcJob(null)
-    setPoolProxiesLoading(true)
+    setPoolProxiesPage(1)
+    setPoolProxies([])
     try {
-      const [proxiesRes, rules] = await Promise.all([
-        api.getPoolProxies(pool.id),
-        api.getAlertRules(pool.id).catch(() => []),
-      ])
-      setPoolProxies(proxiesRes.proxies)
+      const rules = await api.getAlertRules(pool.id).catch(() => [])
       setAlertRules(rules)
     } catch {
-      toast.error("Failed to load pool proxies")
-    } finally {
-      setPoolProxiesLoading(false)
+      toast.error("Failed to load pool details")
     }
   }
 
@@ -266,8 +304,8 @@ export default function PoolsPage() {
     try {
       const res = await api.syncPool(selectedPool.id)
       toast.success(`Synced ${res.synced} proxies into pool`)
-      handleSelectPool(selectedPool)
-      loadAll()
+      await loadAll()
+      await loadPoolProxies(selectedPool.id, poolProxiesPage, poolProxiesLimit)
     } catch {
       toast.error("Sync failed")
     } finally {
@@ -307,8 +345,10 @@ export default function PoolsPage() {
             } else {
               toast.error(`Health check failed: ${job.error}`)
             }
-            if (selectedPool) handleSelectPool(selectedPool)
-            loadAll()
+            await loadAll()
+            if (selectedPool) {
+              await loadPoolProxies(selectedPool.id, poolProxiesPage, poolProxiesLimit)
+            }
           }
         } catch {
           stopHcPoll()
@@ -406,6 +446,10 @@ export default function PoolsPage() {
                             )}
                             {pool.region_name && <span>{pool.region_name}</span>}
                             {pool.city_name && <span>{pool.city_name}</span>}
+                          </div>
+                          <div className="text-xs mt-1.5 min-w-0">
+                            Health check: <code className="text-xs bg-muted px-1 rounded">{pool.health_check_cron}</code>
+                            {" → "}<span className="text-muted-foreground break-all">{pool.health_check_url}</span>
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-1 text-xs shrink-0">
@@ -582,7 +626,7 @@ export default function PoolsPage() {
                   <Card>
                     <CardHeader className="pb-2">
                       <CardTitle className="text-sm">
-                        Proxies in pool ({poolProxies.length})
+                        Proxies in pool ({poolProxiesTotal || selectedPool.total_proxies})
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="p-0">
@@ -595,7 +639,7 @@ export default function PoolsPage() {
                           No proxies. Use Sync to populate from geo filters.
                         </p>
                       ) : (
-                        <div className="max-h-80 overflow-auto">
+                        <>
                           <Table>
                             <TableHeader>
                               <TableRow>
@@ -629,7 +673,53 @@ export default function PoolsPage() {
                               ))}
                             </TableBody>
                           </Table>
-                        </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-muted-foreground">Rows</span>
+                              <Select
+                                value={String(poolProxiesLimit)}
+                                onValueChange={v => {
+                                  setPoolProxiesLimit(Number(v))
+                                  setPoolProxiesPage(1)
+                                }}
+                              >
+                                <SelectTrigger className="h-7 w-[72px] text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {POOL_PROXIES_PAGE_SIZES.map(size => (
+                                    <SelectItem key={size} value={String(size)}>{size}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <span className="text-xs text-muted-foreground">
+                              Page {poolProxiesPage} of {Math.max(poolProxiesTotalPages, 1)}
+                            </span>
+                            <div className="flex gap-1">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                disabled={poolProxiesPage <= 1 || poolProxiesLoading}
+                                onClick={() => setPoolProxiesPage(p => Math.max(1, p - 1))}
+                              >
+                                Previous
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                disabled={poolProxiesPage >= poolProxiesTotalPages || poolProxiesLoading}
+                                onClick={() => setPoolProxiesPage(p => p + 1)}
+                              >
+                                Next
+                              </Button>
+                            </div>
+                          </div>
+                        </>
                       )}
                     </CardContent>
                   </Card>
@@ -829,35 +919,64 @@ export default function PoolsPage() {
                 </div>
 
                 {/* Quick-pick common countries from existing proxy inventory */}
-                {geoCountries.length > 0 && (
-                  <div className="pt-2 border-t mt-1 flex flex-col gap-1.5">
-                    <Label className="text-xs text-muted-foreground">Quick pick from inventory</Label>
-                    <div className="flex flex-wrap gap-1">
-                      {geoCountries.slice(0, 12).map(gc => {
-                        const already = (form.geo_filters ?? []).some(f => f.country_code === gc.country_code && !f.city_name)
-                        return (
-                          <Button
-                            key={gc.country_code}
-                            type="button"
-                            size="sm"
-                            variant={already ? "secondary" : "outline"}
-                            disabled={already}
-                            className="h-6 px-2 text-xs"
-                            onClick={() => setForm({
-                              ...form,
-                              geo_filters: [...(form.geo_filters ?? []), { country_code: gc.country_code }],
-                            })}
-                            title={`${gc.country_name ?? gc.country_code} — ${gc.total} proxies`}
-                          >
-                            <img src={FLAG_CDN(gc.country_code)} alt={gc.country_code} className="h-3 mr-1" />
-                            {gc.country_code}
-                            <span className="ml-1 text-muted-foreground">({gc.total})</span>
-                          </Button>
-                        )
-                      })}
+                {geoCountries.length > 0 && (() => {
+                  const isWholeCountryAdded = (cc: string) =>
+                    (form.geo_filters ?? []).some(f => f.country_code === cc && !f.city_name)
+                  const allAdded = geoCountries.every(gc => isWholeCountryAdded(gc.country_code))
+                  const remaining = geoCountries.filter(gc => !isWholeCountryAdded(gc.country_code)).length
+                  return (
+                    <div className="pt-2 border-t mt-1 flex flex-col gap-1.5">
+                      <Label className="text-xs text-muted-foreground">Quick pick from inventory</Label>
+                      <div className="flex flex-wrap gap-1">
+                        {geoCountries.slice(0, 12).map(gc => {
+                          const already = isWholeCountryAdded(gc.country_code)
+                          return (
+                            <Button
+                              key={gc.country_code}
+                              type="button"
+                              size="sm"
+                              variant={already ? "secondary" : "outline"}
+                              disabled={already}
+                              className="h-6 px-2 text-xs"
+                              onClick={() => setForm({
+                                ...form,
+                                geo_filters: [...(form.geo_filters ?? []), { country_code: gc.country_code }],
+                              })}
+                              title={`${gc.country_name ?? gc.country_code} — ${gc.total} proxies`}
+                            >
+                              <img src={FLAG_CDN(gc.country_code)} alt={gc.country_code} className="h-3 mr-1" />
+                              {gc.country_code}
+                              <span className="ml-1 text-muted-foreground">({gc.total})</span>
+                            </Button>
+                          )
+                        })}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={allAdded ? "secondary" : "outline"}
+                          disabled={allAdded}
+                          className="h-6 px-2 text-xs"
+                          title={allAdded ? "All inventory countries are already added" : `Add all ${remaining} countries from inventory`}
+                          onClick={() => {
+                            const existing = form.geo_filters ?? []
+                            const toAdd = geoCountries
+                              .filter(gc => !isWholeCountryAdded(gc.country_code))
+                              .map(gc => ({ country_code: gc.country_code }))
+                            if (toAdd.length === 0) return
+                            setForm({ ...form, geo_filters: [...existing, ...toAdd] })
+                            toast.success(`Added ${toAdd.length} ${toAdd.length === 1 ? "country" : "countries"}`)
+                          }}
+                        >
+                          <Globe className="h-3 mr-1" />
+                          Add all
+                          {!allAdded && (
+                            <span className="ml-1 text-muted-foreground">({remaining})</span>
+                          )}
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )
+                })()}
               </div>
 
               <div className="flex flex-col gap-1.5">

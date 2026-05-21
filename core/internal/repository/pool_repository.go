@@ -242,6 +242,52 @@ func (r *PoolRepository) GetProxies(ctx context.Context, poolID int) ([]models.P
 	}
 	defer rows.Close()
 
+	proxies, err := scanPoolProxyRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	return proxies, nil
+}
+
+// ListProxies returns a paginated slice of proxies for a given pool and the total count.
+func (r *PoolRepository) ListProxies(ctx context.Context, poolID, page, limit int) ([]models.PoolProxy, int, error) {
+	var total int
+	if err := r.db.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM pool_proxies WHERE pool_id = $1`, poolID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count pool proxies: %w", err)
+	}
+
+	offset := (page - 1) * limit
+	query := `
+		SELECT
+			p.id, p.address, p.protocol, p.username, p.password, p.status,
+			p.country_code, p.country_name, p.region_name, p.city_name, p.isp,
+			p.requests, p.successful_requests, p.failed_requests,
+			p.avg_response_time, p.last_check, ppm.added_at
+		FROM pool_proxies ppm
+		JOIN proxies p ON p.id = ppm.proxy_id
+		WHERE ppm.pool_id = $1
+		ORDER BY p.status, p.address
+		LIMIT $2 OFFSET $3
+	`
+	rows, err := r.db.Pool.Query(ctx, query, poolID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list pool proxies: %w", err)
+	}
+	defer rows.Close()
+
+	proxies, err := scanPoolProxyRows(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return proxies, total, nil
+}
+
+func scanPoolProxyRows(rows interface {
+	Next() bool
+	Scan(dest ...any) error
+}) ([]models.PoolProxy, error) {
 	var proxies []models.PoolProxy
 	for rows.Next() {
 		var pp models.PoolProxy

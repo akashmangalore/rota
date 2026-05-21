@@ -18,6 +18,7 @@ import {
   UpdateSourceRequest,
   ProxyPool,
   PoolProxy,
+  PoolProxiesResponse,
   GeoSummaryItem,
   GeoCityItem,
   PoolHealthCheckResult,
@@ -387,6 +388,11 @@ class ApiClient {
 
   async getPoolProxies(id: number): Promise<{ proxies: PoolProxy[] }> {
     return this.request(`/api/v1/pools/${id}/proxies`)
+  }
+
+  async listPoolProxies(id: number, page = 1, limit = 50): Promise<PoolProxiesResponse> {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) })
+    return this.request(`/api/v1/pools/${id}/proxies/list?${params}`)
   }
 
   async addPoolProxies(id: number, proxyIds: number[]): Promise<{ added: number }> {

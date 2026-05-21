@@ -284,6 +284,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/pools/{id}", s.poolHandler.Get)
 		r.Put("/pools/{id}", s.poolHandler.Update)
 		r.Delete("/pools/{id}", s.poolHandler.Delete)
+		r.Get("/pools/{id}/proxies/list", s.poolHandler.ListProxiesPaginated)
 		r.Get("/pools/{id}/proxies", s.poolHandler.GetProxies)
 		r.Post("/pools/{id}/proxies", s.poolHandler.AddProxies)
 		r.Delete("/pools/{id}/proxies", s.poolHandler.RemoveProxies)
